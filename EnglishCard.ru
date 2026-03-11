@@ -156,6 +156,7 @@ def delete_user_word(user_id, english):
 
 
 def get_user_words(user_id):
+    """Получает все слова пользователя (общие + личные) - используется когда нужны сами слова"""
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
 
@@ -172,6 +173,7 @@ def get_user_words(user_id):
 
 
 def get_random_word(user_id, exclude_word=None):
+    """Получает случайное слово из словаря пользователя"""
     words = get_user_words(user_id)
     if exclude_word:
         words = [w for w in words if w['english'] != exclude_word]
@@ -179,6 +181,7 @@ def get_random_word(user_id, exclude_word=None):
 
 
 def get_random_options(correct_word, all_words, count=3):
+    """Генерирует случайные варианты ответов"""
     other_words = [w for w in all_words if w['english'] != correct_word['english']]
     if len(other_words) < count:
         # Добавляем запасные варианты
@@ -190,7 +193,7 @@ def get_random_options(correct_word, all_words, count=3):
 
 
 def get_common_words_count():
-    """Возвращает количество общих слов в базе"""
+    """Возвращает количество общих слов в базе через SQL COUNT (эффективно)"""
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
     cursor.execute('SELECT COUNT(*) FROM common_words')
@@ -200,7 +203,7 @@ def get_common_words_count():
 
 
 def get_user_personal_words_count(user_id):
-    """Возвращает количество личных слов пользователя"""
+    """Возвращает количество личных слов пользователя через SQL COUNT (эффективно)"""
     conn = sqlite3.connect('words.db')
     cursor = conn.cursor()
     cursor.execute('SELECT COUNT(*) FROM user_words WHERE user_id = ?', (user_id,))
@@ -210,18 +213,15 @@ def get_user_personal_words_count(user_id):
 
 
 def get_user_stats(user_id):
-    """Возвращает общее количество слов пользователя (общие + личные)"""
+    """Возвращает общее количество слов пользователя (общие + личные) - без выгрузки данных"""
     common_count = get_common_words_count()
     personal_count = get_user_personal_words_count(user_id)
     return common_count + personal_count
 
 
-def create_keyboard(user_id, correct_word=None):
-    """Создает клавиатуру с основными кнопками"""
+def create_main_keyboard():
+    """Создает клавиатуру с основными кнопками (без вариантов ответов)"""
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-
-    # Здесь можно добавить логику для создания клавиатуры с вариантами ответов
-    # если нужно показать варианты слов
 
     buttons = [
         types.KeyboardButton(Buttons.NEXT),
@@ -232,6 +232,26 @@ def create_keyboard(user_id, correct_word=None):
     ]
 
     markup.add(*buttons)
+    return markup
+
+
+def create_training_keyboard(options):
+    """Создает клавиатуру для тренировки с вариантами ответов"""
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+
+    # Добавляем варианты ответов
+    for opt in options:
+        markup.add(types.KeyboardButton(opt))
+
+    # Добавляем основные кнопки
+    markup.add(
+        types.KeyboardButton(Buttons.NEXT),
+        types.KeyboardButton(Buttons.ADD_WORD),
+        types.KeyboardButton(Buttons.DELETE_WORD),
+        types.KeyboardButton(Buttons.STATS),
+        types.KeyboardButton(Buttons.MENU)
+    )
+
     return markup
 
 
@@ -257,20 +277,20 @@ def start(message):
 🗑 Удалять слова (только из твоего личного словаря)
 📊 Показывать статистику
 
-Общие слова ({common_count} шт.) уже есть в базе.
+Общие слова ({common_count} шт.: цвета, местоимения и т.д.) уже есть в базе.
 Добавленные тобой слова будут видны только тебе!
 
 Нажми кнопку "➡️ Следующее слово" чтобы начать тренировку!
     """
 
-    markup = create_keyboard(user_id)
+    markup = create_main_keyboard()
     bot.send_message(user_id, welcome_text, reply_markup=markup)
 
 
 @bot.message_handler(func=lambda message: message.text == Buttons.MENU)
 def main_menu(message):
     user_id = message.chat.id
-    markup = create_keyboard(user_id)
+    markup = create_main_keyboard()
     bot.send_message(
         user_id,
         "📋 Главное меню\n\nВыбери действие:",
@@ -281,6 +301,8 @@ def main_menu(message):
 @bot.message_handler(func=lambda message: message.text == Buttons.STATS)
 def show_stats(message):
     user_id = message.chat.id
+    
+    # Все подсчеты через COUNT на стороне БД - эффективно!
     total_words = get_user_stats(user_id)
     common_count = get_common_words_count()
     personal_count = get_user_personal_words_count(user_id)
@@ -362,19 +384,23 @@ def process_russian_word(message):
 def delete_word_start(message):
     user_id = message.chat.id
 
-    conn = sqlite3.connect('words.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT english, russian FROM user_words WHERE user_id = ?', (user_id,))
-    personal_words = cursor.fetchall()
-    conn.close()
+    # Используем COUNT для проверки наличия слов (эффективно)
+    personal_count = get_user_personal_words_count(user_id)
 
-    if not personal_words:
+    if personal_count == 0:
         bot.send_message(
             user_id,
             "📭 У тебя пока нет добавленных слов. Общие слова удалить нельзя!"
         )
         main_menu(message)
         return
+
+    # Получаем список личных слов для отображения (здесь действительно нужны сами слова)
+    conn = sqlite3.connect('words.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT english, russian FROM user_words WHERE user_id = ?', (user_id,))
+    personal_words = cursor.fetchall()
+    conn.close()
 
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     for eng, rus in personal_words:
@@ -410,19 +436,7 @@ def next_word(message):
     options = [current_word['english']] + wrong_options
     random.shuffle(options)
 
-    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-
-    for opt in options:
-        markup.add(types.KeyboardButton(opt))
-
-    # Добавляем основные кнопки
-    markup.add(
-        types.KeyboardButton(Buttons.NEXT),
-        types.KeyboardButton(Buttons.ADD_WORD),
-        types.KeyboardButton(Buttons.DELETE_WORD),
-        types.KeyboardButton(Buttons.STATS),
-        types.KeyboardButton(Buttons.MENU)
-    )
+    markup = create_training_keyboard(options)
 
     user_states[user_id] = {
         'state': 'training',
