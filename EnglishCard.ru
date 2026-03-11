@@ -40,7 +40,6 @@ def init_database():
                    )
                    ''')
 
-
     cursor.execute('''
                    CREATE TABLE IF NOT EXISTS common_words
                    (
@@ -190,17 +189,39 @@ def get_random_options(correct_word, all_words, count=3):
     return [w['english'] for w in selected]
 
 
-def get_user_stats(user_id):
-    words = get_user_words(user_id)
-    return len(words)
+def get_common_words_count():
+    """Возвращает количество общих слов в базе"""
+    conn = sqlite3.connect('words.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM common_words')
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
 
-def create_keyboard(correct_word=None, wrong_word=None):
+
+def get_user_personal_words_count(user_id):
+    """Возвращает количество личных слов пользователя"""
+    conn = sqlite3.connect('words.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM user_words WHERE user_id = ?', (user_id,))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
+def get_user_stats(user_id):
+    """Возвращает общее количество слов пользователя (общие + личные)"""
+    common_count = get_common_words_count()
+    personal_count = get_user_personal_words_count(user_id)
+    return common_count + personal_count
+
+
+def create_keyboard(user_id, correct_word=None):
+    """Создает клавиатуру с основными кнопками"""
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
 
-    if correct_word:
-        all_words = get_user_words(message.chat.id)
-
-        pass
+    # Здесь можно добавить логику для создания клавиатуры с вариантами ответов
+    # если нужно показать варианты слов
 
     buttons = [
         types.KeyboardButton(Buttons.NEXT),
@@ -223,6 +244,8 @@ def start(message):
     add_user(user_id, username, first_name)
     user_states[user_id] = {}
 
+    common_count = get_common_words_count()
+
     welcome_text = f"""
 👋 Привет, {first_name}!
 
@@ -234,37 +257,40 @@ def start(message):
 🗑 Удалять слова (только из твоего личного словаря)
 📊 Показывать статистику
 
-Общие слова (цвета, местоимения и т.д.) уже есть в базе.
+Общие слова ({common_count} шт.) уже есть в базе.
 Добавленные тобой слова будут видны только тебе!
 
 Нажми кнопку "➡️ Следующее слово" чтобы начать тренировку!
     """
 
-    markup = create_keyboard()
+    markup = create_keyboard(user_id)
     bot.send_message(user_id, welcome_text, reply_markup=markup)
 
 
 @bot.message_handler(func=lambda message: message.text == Buttons.MENU)
 def main_menu(message):
     user_id = message.chat.id
-    markup = create_keyboard()
+    markup = create_keyboard(user_id)
     bot.send_message(
         user_id,
         "📋 Главное меню\n\nВыбери действие:",
         reply_markup=markup
     )
 
+
 @bot.message_handler(func=lambda message: message.text == Buttons.STATS)
 def show_stats(message):
     user_id = message.chat.id
-    words_count = get_user_stats(user_id)
+    total_words = get_user_stats(user_id)
+    common_count = get_common_words_count()
+    personal_count = get_user_personal_words_count(user_id)
 
     stats_text = f"""
 📊 Твоя статистика:
 
-📚 Всего слов в словаре: {words_count}
-👤 Общие слова: 10
-➕ Твои слова: {max(0, words_count - 10)}
+📚 Всего слов в словаре: {total_words}
+👤 Общие слова: {common_count}
+➕ Твои слова: {personal_count}
     """
 
     bot.send_message(user_id, stats_text)
@@ -364,11 +390,9 @@ def delete_word_start(message):
     )
 
 
-
 @bot.message_handler(func=lambda message: message.text == Buttons.NEXT)
 def next_word(message):
     user_id = message.chat.id
-
 
     current_word = get_random_word(user_id)
 
@@ -379,23 +403,19 @@ def next_word(message):
         )
         return
 
-
     all_words = get_user_words(user_id)
-
 
     wrong_options = get_random_options(current_word, all_words, 3)
 
-
     options = [current_word['english']] + wrong_options
     random.shuffle(options)
-
 
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
 
     for opt in options:
         markup.add(types.KeyboardButton(opt))
 
-
+    # Добавляем основные кнопки
     markup.add(
         types.KeyboardButton(Buttons.NEXT),
         types.KeyboardButton(Buttons.ADD_WORD),
@@ -403,7 +423,6 @@ def next_word(message):
         types.KeyboardButton(Buttons.STATS),
         types.KeyboardButton(Buttons.MENU)
     )
-
 
     user_states[user_id] = {
         'state': 'training',
@@ -418,13 +437,12 @@ def next_word(message):
     )
 
 
-
 @bot.message_handler(func=lambda message: True)
 def handle_answer(message):
     user_id = message.chat.id
     text = message.text
 
-
+    # Обработка удаления слова
     if user_id in user_states and user_states[user_id].get('state') == 'deleting':
         if text.startswith('🗑'):
             try:
@@ -442,37 +460,35 @@ def handle_answer(message):
         main_menu(message)
         return
 
-
+    # Обработка ответа на тренировке
     if user_id in user_states and user_states[user_id].get('state') == 'training':
         current_word = user_states[user_id]['current_word']
         russian = user_states[user_id]['russian']
 
         if text.lower() == current_word.lower():
-
             bot.send_message(
                 user_id,
                 f"✅ Правильно! {current_word} - {russian}\n\nМолодец! 🎉"
             )
         else:
-
             bot.send_message(
                 user_id,
                 f"❌ Неправильно!\nПравильный ответ: {current_word} - {russian}\n\nПопробуй ещё раз:"
             )
-
-
+            # Сразу показываем следующее слово
             next_word(message)
             return
 
-
+        # Показываем следующее слово
         next_word(message)
     else:
-
         main_menu(message)
+
 
 if __name__ == '__main__':
     init_database()
+    common_count = get_common_words_count()
     print("✅ Бот запущен...")
-    print("📚 База данных инициализирована")
+    print(f"📚 База данных инициализирована (общих слов: {common_count})")
     print("🤖 Ожидание сообщений...")
     bot.infinity_polling(skip_pending=True)
